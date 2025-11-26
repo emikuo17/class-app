@@ -1,106 +1,120 @@
-import streamlit as st
+import io
+from pathlib import Path
+from typing import Dict, Set, List
+
 import pandas as pd
-import json
+import streamlit as st
 
-# -------------------------------------------------------------------
-# Default marketing keyword dictionaries
-# -------------------------------------------------------------------
-DEFAULT_DICTIONARIES = {
-    'urgency_marketing': {
-        'limited', 'limited time', 'limited run', 'limited edition', 'order now',
-        'last chance', 'hurry', 'while supplies last', "before they're gone",
-        'selling out', 'selling fast', 'act now', "don't wait", 'today only',
-        'expires soon', 'final hours', 'almost gone'
-    },
-    'exclusive_marketing': {
-        'exclusive', 'exclusively', 'exclusive offer', 'exclusive deal',
-        'members only', 'vip', 'special access', 'invitation only',
-        'premium', 'privileged', 'limited access', 'select customers',
-        'insider', 'private sale', 'early access'
+###############################################################################
+# Streamlit – Marketing Keyword Classifier                                   #
+###############################################################################
+st.set_page_config(page_title="Marketing Keyword Classifier", layout="wide")
+st.title("📈 Marketing Keyword Classifier")
+
+# ---------------------------------------------------------------------------
+# 🛠️ Sidebar – Upload & Configuration
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    st.header("🗂️ 1. Upload Your CSV")
+    uploaded_file = st.file_uploader("CSV file with a 'Statement' column", type=["csv"])
+
+    st.markdown("---")
+    st.header("🔧 2. Configure Dictionaries")
+
+    # Default marketing keyword dictionaries
+    default_dicts: Dict[str, Set[str]] = {
+        "urgency_marketing": {
+            "limited", "limited time", "limited run", "limited edition", "order now",
+            "last chance", "hurry", "while supplies last", "before they're gone",
+            "selling out", "selling fast", "act now", "don't wait", "today only",
+            "expires soon", "final hours", "almost gone",
+        },
+        "exclusive_marketing": {
+            "exclusive", "exclusively", "exclusive offer", "exclusive deal",
+            "members only", "vip", "special access", "invitation only",
+            "premium", "privileged", "limited access", "select customers",
+            "insider", "private sale", "early access",
+        },
     }
-}
 
-# -------------------------------------------------------------------
-# Helper classification function
-# -------------------------------------------------------------------
-def classify_statement(text: str, dictionaries: dict) -> list[str]:
+    # Load edited or new dictionaries into this object
+    current_dicts: Dict[str, Set[str]] = {}
+
+    for label, keywords in default_dicts.items():
+        kw_text = "\n".join(sorted(keywords))
+        new_kw_text = st.text_area(
+            f"Keywords for **{label}** (one per line)", kw_text, key=label
+        )
+        kw_set = {kw.strip().lower() for kw in new_kw_text.split("\n") if kw.strip()}
+        if kw_set:
+            current_dicts[label] = kw_set
+
+    # Section to add a completely new category
+    st.markdown("---")
+    st.subheader("➕ Add New Category")
+    new_label = st.text_input("New category name (alphanumeric and underscores)")
+    new_kw_input = st.text_area("Keywords for new category (one per line)")
+    if new_label and new_kw_input:
+        new_kw_set = {kw.strip().lower() for kw in new_kw_input.split("\n") if kw.strip()}
+        if new_kw_set:
+            current_dicts[new_label.strip().lower()] = new_kw_set
+
+    st.markdown("---")
+    one_hot = st.checkbox("Add one‑hot encoded columns", value=True)
+
+###############################################################################
+# Helper – Classification Function
+###############################################################################
+
+def classify_statement(text: str, dictionaries: Dict[str, Set[str]]) -> List[str]:
+    """Return list of dictionary names whose keywords appear in *text*."""
     text_lower = text.lower()
-    matched = []
+    matched: List[str] = []
     for label, keywords in dictionaries.items():
         if any(kw in text_lower for kw in keywords):
             matched.append(label)
     return matched
 
-# -------------------------------------------------------------------
-# Streamlit App
-# -------------------------------------------------------------------
-def main():
-    st.title("📊 Marketing Statement Classifier")
-    st.write("Upload a CSV file and modify the keyword dictionaries to classify marketing statements.")
+###############################################################################
+# 🚀 Main – Run Classification & Display Results
+###############################################################################
 
-    # --- Sidebar dictionary editor ----------------------------------------
-    st.sidebar.header("📝 Keyword Dictionaries")
+def run_classifier(file_buffer: io.BytesIO, dictionaries: Dict[str, Set[str]]):
+    df = pd.read_csv(file_buffer)
 
-    # store dictionaries in session_state
-    if "dictionaries" not in st.session_state:
-        st.session_state.dictionaries = {k: list(v) for k, v in DEFAULT_DICTIONARIES.items()}
+    if "Statement" not in df.columns:
+        st.error("❌ The uploaded CSV must contain a column named 'Statement'.")
+        return
 
-    # editable dictionary UI
-    for label in list(st.session_state.dictionaries.keys()):
-        with st.sidebar.expander(f"Edit: {label}", expanded=False):
-            keywords_text = st.text_area(
-                f"Enter keywords for **{label}** (one per line):",
-                value="\n".join(st.session_state.dictionaries[label]),
-                key=f"dict_{label}"
-            )
-            # Save back to session state
-            st.session_state.dictionaries[label] = [
-                kw.strip() for kw in keywords_text.split("\n") if kw.strip()
-            ]
+    # Classify
+    with st.spinner("Classifying statements…"):
+        df["labels"] = df["Statement"].astype(str).apply(classify_statement, dictionaries=dictionaries)
+        if one_hot:
+            for label in dictionaries:
+                df[label] = df["labels"].apply(lambda cats, lbl=label: lbl in cats)
 
-    st.sidebar.write("---")
-    st.sidebar.write("Add new category:")
-    new_cat = st.sidebar.text_input("New category name:")
-    if st.sidebar.button("Add category"):
-        if new_cat and new_cat not in st.session_state.dictionaries:
-            st.session_state.dictionaries[new_cat] = []
-        else:
-            st.sidebar.warning("Category already exists or name is empty.")
+    st.success("✅ Classification complete!")
 
-    # --- File upload --------------------------------------------------------
-    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
+    # Preview
+    st.subheader("🔍 Preview (first 10 rows)")
+    st.dataframe(df.head(10), use_container_width=True)
 
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        st.write("### 🔍 Preview of uploaded data:")
-        st.write(df.head())
+    # Download
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download classified CSV",
+        data=csv_bytes,
+        file_name="classified_output.csv",
+        mime="text/csv",
+    )
 
-        if "Statement" not in df.columns:
-            st.error("❌ The uploaded CSV must contain a column named **'Statement'**.")
-            return
-
-        # --- Classification -------------------------------------------------
-        dictionaries = {k: set(v) for k, v in st.session_state.dictionaries.items()}
-
-        df["labels"] = df["Statement"].astype(str).apply(
-            lambda x: classify_statement(x, dictionaries)
-        )
-
-        # One-hot encoding columns
-        for label in dictionaries:
-            df[label] = df["labels"].apply(lambda cats, lbl=label: lbl in cats)
-
-        st.write("### ✅ Classified Data Preview:")
-        st.dataframe(df)
-
-        # --- Download -------------------------------------------------------
-        csv_output = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Download Classified CSV",
-            csv_output,
-            file_name="classified_output.csv",
-            mime="text/csv"
-        )
-
-if __name__ == "__main__":
-    main()
+###############################################################################
+# 🏁 App Execution
+###############################################################################
+if uploaded_file is not None:
+    try:
+        run_classifier(uploaded_file, current_dicts)
+    except Exception as e:
+        st.exception(e)
+else:
+    st.info("👆 Upload a CSV file to get started.")
